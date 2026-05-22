@@ -341,21 +341,32 @@ fi
 # --- 5e. Pocket health probe ---
 POCKET_STATE_DIR="$HOME/.claude/state/pocket"
 POCKET_CONFIGURED=false
+POCKET_SKIP_LOCAL=false
+POCKET_LOCATION=""
 if [ -f "$PREFS" ] && command -v jq >/dev/null 2>&1; then
   jq -e '.pocket.enabled == true' "$PREFS" >/dev/null 2>&1 && POCKET_CONFIGURED=true
+  # channels.pocket.skip_local_health_checks=true (or pocket.skip_local_health_checks=true) → pocket runs remotely (e.g. EC2 systemd)
+  if jq -e '.channels.pocket.skip_local_health_checks == true' "$PREFS" >/dev/null 2>&1 \
+       || jq -e '.pocket.skip_local_health_checks == true' "$PREFS" >/dev/null 2>&1; then
+    POCKET_SKIP_LOCAL=true
+  fi
+  POCKET_LOCATION=$(jq -r '.pocket.location // .channels.pocket.location // ""' "$PREFS" 2>/dev/null || echo "")
 fi
 # Also probe if any health/config file already exists (partial install)
-for _pf in \
-  "$POCKET_STATE_DIR/.activity-notifier-health" \
-  "$POCKET_STATE_DIR/.out-queue-health" \
-  "$POCKET_STATE_DIR/.email-bridge-health" \
-  "$POCKET_STATE_DIR/.whatsapp-bridge-health" \
-  "$POCKET_STATE_DIR/whatsapp-config.json" \
-  "$POCKET_STATE_DIR/email-config.json"; do
-  [ -f "$_pf" ] && POCKET_CONFIGURED=true && break
-done
+# Skip this detection when remote-only mode is active — stale local files would trigger false positives
+if [ "$POCKET_SKIP_LOCAL" = false ]; then
+  for _pf in \
+    "$POCKET_STATE_DIR/.activity-notifier-health" \
+    "$POCKET_STATE_DIR/.out-queue-health" \
+    "$POCKET_STATE_DIR/.email-bridge-health" \
+    "$POCKET_STATE_DIR/.whatsapp-bridge-health" \
+    "$POCKET_STATE_DIR/whatsapp-config.json" \
+    "$POCKET_STATE_DIR/email-config.json"; do
+    [ -f "$_pf" ] && POCKET_CONFIGURED=true && break
+  done
+fi
 
-if [ "$POCKET_CONFIGURED" = true ]; then
+if [ "$POCKET_CONFIGURED" = true ] && [ "$POCKET_SKIP_LOCAL" = false ]; then
   NOW=$(date +%s)
   MAX_HEALTH_AGE=300  # 5 minutes
 
@@ -444,6 +455,73 @@ if [ "$POCKET_CONFIGURED" = true ]; then
       fi
     fi
   fi
+fi
+
+# --- 5e2. Pocket REMOTE health probe (EC2 dev-sandbox) ---
+# When pocket runs on EC2 (systemd timers + ops-ui), SSH in and check unit health.
+# Probe runs ONLY when preferences.pocket.location == "ec2:dev-sandbox".
+# Fail-fast: 5s ConnectTimeout, BatchMode (no interactive prompts), single SSH call.
+# SSH failure is non-blocking (laptop offline / IP not whitelisted is expected sometimes).
+if [ "$POCKET_LOCATION" = "ec2:dev-sandbox" ]; then
+  # Timer→service mapping: 6 oneshot units triggered by .timer.
+  # 1 long-running unit (pocket-ops-ui) must report active.
+  _POCKET_REMOTE_OUT=$(ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    dev-sandbox \
+    'sudo systemctl is-active pocket-ops-ui 2>&1; echo "---TIMERS---"; sudo systemctl list-timers "pocket-*" --no-pager --no-legend 2>&1' \
+    2>/dev/null) || _POCKET_REMOTE_RC=$?
+  _POCKET_REMOTE_RC="${_POCKET_REMOTE_RC:-0}"
+
+  if [ "$_POCKET_REMOTE_RC" -ne 0 ] || [ -z "$_POCKET_REMOTE_OUT" ]; then
+    WARNINGS+=("pocket_ec2_unreachable: cannot SSH to dev-sandbox (rc=$_POCKET_REMOTE_RC) — pocket remote probe skipped. If persistent, run ~/Projects/claude-ops/claude-ops/scripts/ssh-auto-whitelist.sh dev-sandbox to refresh SG whitelist.")
+  else
+    # Split output at ---TIMERS--- marker
+    _UI_STATE=$(printf '%s\n' "$_POCKET_REMOTE_OUT" | awk '/^---TIMERS---$/{exit} {print}' | tr -d '\r' | head -1)
+    _TIMERS_BLOCK=$(printf '%s\n' "$_POCKET_REMOTE_OUT" | awk 'f{print} /^---TIMERS---$/{f=1}')
+
+    # pocket-ops-ui must be active (Restart=always)
+    if [ "$_UI_STATE" != "active" ]; then
+      WARNINGS+=("pocket_ec2_ui_down: pocket-ops-ui on dev-sandbox is '$_UI_STATE' (expected 'active'). Fix: ssh dev-sandbox 'sudo systemctl restart pocket-ops-ui'")
+    fi
+
+    # Parse timer LAST column. Format:
+    #   NEXT-DATE NEXT-TIME ZONE  LEFT  LAST-DATE LAST-TIME ZONE  AGO  UNIT  SERVICE
+    # Example:
+    #   Fri 2026-05-22 19:00:58 CEST 47s left      Fri 2026-05-22 18:59:57 CEST 12s ago      pocket-out-queue.timer pocket-out-queue.service
+    # 6 oneshot timers expected. Stale threshold: 15 min (900s).
+    EXPECTED_TIMERS="pocket-watcher pocket-executor pocket-out-queue pocket-activity-notifier pocket-email-bridge pocket-whatsapp-bridge"
+    for _tname in $EXPECTED_TIMERS; do
+      _line=$(printf '%s\n' "$_TIMERS_BLOCK" | grep "^.*${_tname}\.timer" | head -1)
+      if [ -z "$_line" ]; then
+        WARNINGS+=("pocket_ec2_timer_missing_${_tname}: timer not found in systemctl list-timers output on dev-sandbox. Fix: ssh dev-sandbox 'sudo systemctl enable --now ${_tname}.timer'")
+        continue
+      fi
+
+      # Extract the "X ago" / "Xmin Y ago" / "Xh Ymin ago" / "X days ago" column.
+      # It's the field immediately preceding `ago`. Use sed to grab the value(s) before " ago".
+      _ago_blob=$(printf '%s\n' "$_line" | sed -E 's/.*CEST[[:space:]]+([^ ]+([[:space:]][^ ]+)?)[[:space:]]+ago[[:space:]]+.*/\1/' | sed -E 's/CET[[:space:]]+([^ ]+([[:space:]][^ ]+)?)[[:space:]]+ago[[:space:]]+.*/\1/')
+      # Convert ago_blob to seconds. Handles forms: "12s", "3min", "3min 26s", "1h", "1h 5min", "2 days", "1 weeks".
+      _age_sec=$(awk -v s="$_ago_blob" 'BEGIN{
+        n=split(s, p, /[[:space:]]+/);
+        total=0;
+        for (i=1; i<=n; i++) {
+          v=p[i];
+          if (match(v, /^[0-9]+s$/))         { total += substr(v,1,RLENGTH-1)+0 }
+          else if (match(v, /^[0-9]+min$/))  { total += (substr(v,1,RLENGTH-3)+0)*60 }
+          else if (match(v, /^[0-9]+h$/))    { total += (substr(v,1,RLENGTH-1)+0)*3600 }
+          else if (match(v, /^[0-9]+$/))     { num=v+0; nxt=p[i+1]; if (nxt ~ /^day/) { total += num*86400; i++ } else if (nxt ~ /^week/) { total += num*604800; i++ } else if (nxt ~ /^month/) { total += num*2592000; i++ } }
+        }
+        print total;
+      }')
+      _age_sec="${_age_sec:-0}"
+
+      # 15min threshold = 900s. All 6 timers fire every 2-5 min, so 15min stale = real problem.
+      if [ "$_age_sec" -gt 900 ] 2>/dev/null; then
+        _age_min=$(( _age_sec / 60 ))
+        WARNINGS+=("pocket_ec2_timer_stale_${_tname}: timer last fired ${_age_min}m ago on dev-sandbox (threshold 15m). Fix: ssh dev-sandbox 'sudo systemctl status ${_tname}.timer ${_tname}.service'")
+      fi
+    done
+  fi
+  unset _POCKET_REMOTE_OUT _POCKET_REMOTE_RC _UI_STATE _TIMERS_BLOCK _tname _line _ago_blob _age_sec _age_min
 fi
 
 # --- 5f. MCP watchdog health probes ---

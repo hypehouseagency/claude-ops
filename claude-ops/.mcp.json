@@ -2,7 +2,9 @@
   "mcpServers": {
     "telegram": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/telegram-server/index.js"],
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/telegram-server/index.js"
+      ],
       "env": {
         "TELEGRAM_API_ID": "${user_config.telegram_api_id}",
         "TELEGRAM_API_HASH": "${user_config.telegram_api_hash}",
@@ -12,9 +14,15 @@
     },
     "doppler": {
       "command": "npx",
-      "args": ["-y", "-p", "@dopplerhq/mcp-server", "doppler-mcp"],
+      "args": [
+        "-y",
+        "-p",
+        "@dopplerhq/mcp-server",
+        "doppler-mcp",
+        "--read-only"
+      ],
       "env": {
-        "DOPPLER_TOKEN": "${user_config.doppler_token}"
+        "DOPPLER_TOKEN": "${DOPPLER_TOKEN}"
       }
     }
   }

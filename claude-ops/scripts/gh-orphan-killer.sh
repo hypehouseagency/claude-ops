@@ -35,13 +35,22 @@ while true; do
   pids=$( {
     pgrep -f "gh pr checks .*--watch" 2>/dev/null
     pgrep -f "gh run watch" 2>/dev/null
-    # Find zsh/bash poll-loop wrappers (sleep <20s + gh subcommand in same cmdline)
+    # Find zsh/bash poll-loop wrappers (sleep <20s + gh OR curl-to-github in same cmdline)
     ps -eo pid,command 2>/dev/null | awk '
       /\/opt\/homebrew\/bin\/zsh|\/bin\/bash/ &&
-      /gh pr (view|checks|api|status)/ &&
-      /sleep [1-9](\s|;|\\)|sleep 1[0-9](\s|;|\\)/ &&
-      !/gh-orphan-killer|gh-watch-guard/ { print $1 }
+      ( /gh pr (view|checks|api|status)/ || /curl[^|]*api\.github\.com/ ) &&
+      /sleep [1-9](\s|;|\\|\))|sleep 1[0-9](\s|;|\\|\))/ &&
+      !/gh-orphan-killer|gh-watch-guard|github-api-watcher/ { print $1 }
     '
+    # Also catch the actual curl-to-github children (not just wrappers)
+    pgrep -f "curl.*api\.github\.com" 2>/dev/null | while read p; do
+      # only kill curl if its parent is a known-bad poll wrapper
+      ppid=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+      [ -n "$ppid" ] && pcmd=$(ps -o command= -p "$ppid" 2>/dev/null) || pcmd=""
+      if echo "$pcmd" | grep -qE 'until|while.*sleep [1-9](\s|;|\)|\\)|sleep 1[0-9](\s|;|\)|\\)'; then
+        echo "$p"
+      fi
+    done
   } | sort -u )
   for pid in $pids; do
     [ -z "$pid" ] && continue
