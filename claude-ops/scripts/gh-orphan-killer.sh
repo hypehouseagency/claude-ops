@@ -27,7 +27,22 @@ while true; do
   # `gh ... --watch` is never legitimate — kill on sight, no age check.
   # Sibling Claude sessions repeatedly spawn it; tight loop minimises burn.
   killed=0
-  pids=$( { pgrep -f "gh pr checks .*--watch" 2>/dev/null; pgrep -f "gh run watch" 2>/dev/null; } | sort -u )
+  # Catch:
+  # 1. `gh ... --watch` (always bad)
+  # 2. `gh run watch` (always bad)
+  # 3. Shells running tight gh-poll loops: the wrapping zsh whose command line
+  #    contains both `gh pr view|checks|api` AND `sleep [1-9]` or `sleep 1[0-9]`
+  pids=$( {
+    pgrep -f "gh pr checks .*--watch" 2>/dev/null
+    pgrep -f "gh run watch" 2>/dev/null
+    # Find zsh/bash poll-loop wrappers (sleep <20s + gh subcommand in same cmdline)
+    ps -eo pid,command 2>/dev/null | awk '
+      /\/opt\/homebrew\/bin\/zsh|\/bin\/bash/ &&
+      /gh pr (view|checks|api|status)/ &&
+      /sleep [1-9](\s|;|\\)|sleep 1[0-9](\s|;|\\)/ &&
+      !/gh-orphan-killer|gh-watch-guard/ { print $1 }
+    '
+  } | sort -u )
   for pid in $pids; do
     [ -z "$pid" ] && continue
     # capture parent BEFORE killing child

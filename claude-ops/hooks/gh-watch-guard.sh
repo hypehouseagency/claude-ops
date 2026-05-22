@@ -53,18 +53,32 @@ EOF
     exit 2
 fi
 
-# --- Pattern 2: tight gh loops (sleep < 10s) ---
-# Catches: `while true; do gh ...; sleep 5; done` style polls.
-if echo "$CMD" | grep -qE '(while|until|for).*gh\s+(api|pr|run|issue)' && \
-   echo "$CMD" | grep -qE 'sleep\s+([0-9]|10)(\s|;|$)'; then
+# --- Pattern 2: tight gh loops (sleep < 25s) ---
+# Catches: `while true; do gh ...; sleep 5; done` style polls,
+# including bash heredocs (`bash << EOF ... done EOF`).
+# Multi-line aware: drop newlines before regexing.
+CMD_FLAT=$(echo "$CMD" | tr '\n' ' ')
+if echo "$CMD_FLAT" | grep -qE '(while|until|for|do).*gh\s+(api|pr|run|issue)' && \
+   echo "$CMD_FLAT" | grep -qE 'sleep\s+([0-9]|1[0-9]|2[0-4])(\s|;|$|\\)'; then
     cat >&2 <<'EOF'
-BLOCKED: tight gh polling loop (sleep < 10s) detected.
+BLOCKED: tight gh polling loop (sleep < 25s) detected.
 
 The 5000/hr REST quota is shared across this session, background daemons, the overnight
-sync cron, and any other gh process. A loop at sleep 5 burns 720 calls/hr — easy to OOM-cache.
+sync cron, and any other gh process. A loop at sleep 5 burns 720 calls/hr — easy to exhaust.
 
-Bump to `sleep 30` (or use Monitor tool — handles ≥25s naturally).
+Options:
+  - Bump to `sleep 30` (or higher)
+  - Use the Monitor tool — handles ≥25s naturally and emits on state-change
+  - Use GraphQL (separate 5000/hr bucket) for multi-PR checks
+
+Heredoc loops (`bash << EOF`) ARE caught by this rule.
 EOF
+    exit 2
+fi
+
+# --- Pattern 3: gh ... --watch already covered above, but also catch in subshells/eval ---
+if echo "$CMD_FLAT" | grep -qE 'gh\s+(pr|run)\s+(checks|view|status)?\s*\S*\s*--watch\b'; then
+    cat >&2 'BLOCKED: gh ... --watch hidden in subshell/eval. Use Monitor with ≥25s poll instead.'
     exit 2
 fi
 
