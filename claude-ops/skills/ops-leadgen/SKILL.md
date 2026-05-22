@@ -5,6 +5,7 @@ argument-hint: "[review | send --draft-id N | usage | scrape | draft]"
 allowed-tools:
   - Bash
   - Read
+  - AskUserQuestion
 effort: low
 maxTurns: 20
 ---
