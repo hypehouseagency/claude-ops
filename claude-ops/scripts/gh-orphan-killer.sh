@@ -6,7 +6,8 @@
 #
 # Source of truth: ~/Projects/claude-ops/claude-ops/scripts/gh-orphan-killer.sh
 
-set -euo pipefail
+set -uo pipefail
+# NOT using -e: kill/ps on dead pids return non-zero; we want to keep looping.
 
 PIDFILE="${TMPDIR:-/tmp}/gh-orphan-killer.pid"
 LOG="${HOME}/.claude/logs/gh-orphan-killer.log"
@@ -26,19 +27,22 @@ while true; do
   # `gh ... --watch` is never legitimate — kill on sight, no age check.
   # Sibling Claude sessions repeatedly spawn it; tight loop minimises burn.
   killed=0
-  for pid in $(pgrep -f "gh pr checks .*--watch" 2>/dev/null; pgrep -f "gh run watch" 2>/dev/null); do
+  pids=$( { pgrep -f "gh pr checks .*--watch" 2>/dev/null; pgrep -f "gh run watch" 2>/dev/null; } | sort -u )
+  for pid in $pids; do
     [ -z "$pid" ] && continue
-    cmd=$(ps -o command= -p "$pid" 2>/dev/null | head -c 120)
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) kill orphan pid=$pid: $cmd" >> "$LOG"
-    kill -9 "$pid" 2>/dev/null || true
-    # also nuke parent shell if it's the wrapper that spawned the watch
-    ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    # capture parent BEFORE killing child
+    ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || echo "")
+    cmd=$(ps -o command= -p "$pid" 2>/dev/null | head -c 120 || echo "")
+    pcmd=""
     if [ -n "$ppid" ] && [ "$ppid" != "1" ]; then
-      pcmd=$(ps -o command= -p "$ppid" 2>/dev/null | head -c 100)
-      if echo "$pcmd" | grep -q "gh pr checks.*--watch\|gh run watch"; then
-        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)   + parent pid=$ppid: $pcmd" >> "$LOG"
-        kill -9 "$ppid" 2>/dev/null || true
-      fi
+      pcmd=$(ps -o command= -p "$ppid" 2>/dev/null | head -c 200 || echo "")
+    fi
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) kill orphan pid=$pid: $cmd" >> "$LOG"
+    kill -9 "$pid" 2>/dev/null
+    # Kill the wrapping shell too if it explicitly ran the watch
+    if [ -n "$pcmd" ] && echo "$pcmd" | grep -q "gh pr checks.*--watch\|gh run watch"; then
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)   + parent pid=$ppid: $pcmd" >> "$LOG"
+      kill -9 "$ppid" 2>/dev/null
     fi
     killed=$((killed + 1))
   done
