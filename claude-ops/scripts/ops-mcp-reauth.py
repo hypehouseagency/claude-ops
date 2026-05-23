@@ -267,15 +267,22 @@ def main() -> int:
             while True:
                 open_pages = [p for p in pages if not p.is_closed()]
                 if not open_pages:
-                    break
+                    return 0
                 remaining_ms = int(max(0, (deadline - time.monotonic()) * 1000))
                 if remaining_ms <= 0:
-                    break
+                    log(
+                        "bootstrap incomplete — deadline reached before every login tab was closed"
+                    )
+                    return 1
                 try:
                     open_pages[0].wait_for_event("close", timeout=remaining_ms)
                 except Exception:
-                    break
-        return 0
+                    if time.monotonic() >= deadline:
+                        log(
+                            "bootstrap incomplete — deadline reached before every login tab was closed"
+                        )
+                        return 1
+                    continue
 
     url = sys.argv[1]
     proc, auth_url = spawn_mcp_remote(url)

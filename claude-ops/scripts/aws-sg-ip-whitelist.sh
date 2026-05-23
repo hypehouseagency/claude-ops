@@ -5,8 +5,8 @@
 # Behavior:
 #   1. Fetch current public IPv4 via ifconfig.me / icanhazip.com / ipify.
 #   2. If already present in SG with a "$DESC_PREFIX-*" description: no-op.
-#   3. Otherwise revoke "$DESC_PREFIX-*" rules older than KEEP_RECENT count.
-#   4. Authorize the new IP on the target port with a timestamped description.
+#   3. Otherwise authorize the new IP first (avoids lockout if authorize fails).
+#   4. Then revoke "$DESC_PREFIX-*" rules older than KEEP_RECENT count.
 #
 # Configuration (env vars or claude-ops preferences):
 #   IP_WHITELIST_SG_ID            REQUIRED — target Security Group ID (sg-...)
@@ -69,6 +69,15 @@ mapfile -t STALE < <(
   '
 )
 
+TIMESTAMP=$(date +%Y%m%d-%H%M)
+NEW_DESC="${DESC_PREFIX}-${TIMESTAMP}"
+log "authorizing $IP/32 as $NEW_DESC"
+
+aws ec2 authorize-security-group-ingress \
+  --region "$REGION" --group-id "$SG_ID" \
+  --ip-permissions "IpProtocol=tcp,FromPort=$PORT,ToPort=$PORT,IpRanges=[{CidrIp=$IP/32,Description=$NEW_DESC}]" \
+  >/dev/null 2>&1 || { log "authorize failed"; exit 2; }
+
 for entry in "${STALE[@]}"; do
   [[ -z "$entry" ]] && continue
   cidr="${entry%%|*}"
@@ -79,14 +88,5 @@ for entry in "${STALE[@]}"; do
     --ip-permissions "IpProtocol=tcp,FromPort=$PORT,ToPort=$PORT,IpRanges=[{CidrIp=$cidr}]" \
     >/dev/null 2>&1 || log "  (revoke failed for $cidr — continuing)"
 done
-
-TIMESTAMP=$(date +%Y%m%d-%H%M)
-NEW_DESC="${DESC_PREFIX}-${TIMESTAMP}"
-log "authorizing $IP/32 as $NEW_DESC"
-
-aws ec2 authorize-security-group-ingress \
-  --region "$REGION" --group-id "$SG_ID" \
-  --ip-permissions "IpProtocol=tcp,FromPort=$PORT,ToPort=$PORT,IpRanges=[{CidrIp=$IP/32,Description=$NEW_DESC}]" \
-  >/dev/null 2>&1 || { log "authorize failed"; exit 2; }
 
 log "OK $IP whitelisted as $NEW_DESC on $SG_ID"

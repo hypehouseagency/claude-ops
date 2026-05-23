@@ -266,6 +266,10 @@ def _bootstrap() -> Path | None:
             )
             return None
 
+    runner = _runner_in(src)
+    if runner is None:
+        return None
+
     try:
         (src / _CACHE_READY_MARKER).write_text("ok\n", encoding="ascii")
     except OSError as e:
@@ -275,7 +279,7 @@ def _bootstrap() -> Path | None:
         )
         return None
 
-    return _runner_in(src)
+    return runner
 
 
 def main() -> int:
