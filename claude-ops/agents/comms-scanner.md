@@ -48,7 +48,7 @@ mcp__whatsapp__list_chats sort_by=last_active
 #   last_is_from_me == 0  →  NEEDS_REPLY  (they sent last)
 #
 # For chats where last_is_from_me is absent or null, fall back to fetching the thread:
-#   mcp__whatsapp__list_messages chat_jid="<JID>" limit=5
+#   mcp__whatsapp__list_messages chat_jid="<JID>" limit=20
 #   Check is_from_me on the LAST element of the returned array.
 ```
 
