@@ -1542,7 +1542,7 @@ surface_perf_signals() {
     # ad's trailing-7d spend), restricted to ads seen in the last 36h. Summing the raw
     # ledger tail double-counts (one row per ad per pass) → that was the phantom ~$535
     # that produced "ROAS 0.04" + false runaway escalations. This reads the true ~7d spend.
-    meta_spend_7d="$(tail -n 800 "$kpi_ledger" 2>/dev/null | jq -sr --arg cut "$_cut36" '[ .[] | select(($cut=="") or ((.ts//"")>=$cut)) ] | group_by(.ad_id) | map(max_by(.ts // "")) | [.[].spend // 0] | add // 0' 2>/dev/null || echo 0)"
+    meta_spend_7d="$(jq -sr --arg cut "$_cut36" '[ .[] | select(($cut=="") or ((.ts//"")>=$cut)) ] | group_by(.ad_id) | map(max_by(.ts // "")) | [.[].spend // 0] | add // 0' "$kpi_ledger" 2>/dev/null || echo 0)"
     stripe_rev_7d="$(jq -r '.total_revenue_7d // 0' "$stripe_f" 2>/dev/null || echo 0)"
     revcat_rev_7d="$( [ -f "$revcat_f" ] && jq -r '.revenuecat_revenue_7d // 0' "$revcat_f" 2>/dev/null || echo 0 )"
     [ -z "$revcat_rev_7d" ] && revcat_rev_7d=0
@@ -1579,7 +1579,7 @@ surface_perf_signals() {
     threshold="${OPS_KLAVIYO_REVENUE_RATIO_FLAG:-0.5}"
     if [ -f "$kpi_ledger" ]; then
       local _cut36k; _cut36k="$(date -u -v-36H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '36 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '')"
-      meta_spend="$(tail -n 800 "$kpi_ledger" 2>/dev/null | jq -sr --arg cut "$_cut36k" '[ .[] | select(($cut=="") or ((.ts//"")>=$cut)) ] | group_by(.ad_id) | map(max_by(.ts // "")) | [.[].spend // 0] | add // 0' 2>/dev/null || echo 0)"
+      meta_spend="$(jq -sr --arg cut "$_cut36k" '[ .[] | select(($cut=="") or ((.ts//"")>=$cut)) ] | group_by(.ad_id) | map(max_by(.ts // "")) | [.[].spend // 0] | add // 0' "$kpi_ledger" 2>/dev/null || echo 0)"
       ratio="$(awk -v k="${klv_rev:-0}" -v s="${meta_spend:-0}" \
         'BEGIN{ if (s+0>0) printf "%.2f", k/s; else print 0 }')"
       if awk "BEGIN{exit !(${ratio:-0} > ${threshold:-0.5})}"; then
@@ -1688,8 +1688,8 @@ apply_calibration_and_bandit() {
     # drop out of the bandit (fixes the "ledger tracks dead ads" pollution).
     local cutoff; cutoff="$(date -u -v-36H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '36 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '')"
     local recent_kpi
-    recent_kpi="$(tail -n 800 "$kpi_ledger" 2>/dev/null | jq -sc --arg cut "$cutoff" \
-      '[ .[] | select(($cut=="") or ((.ts // "") >= $cut)) ] | group_by(.ad_id) | map(max_by(.ts // ""))' 2>/dev/null || echo '[]')"
+    recent_kpi="$(jq -sc --arg cut "$cutoff" \
+      '[ .[] | select(($cut=="") or ((.ts // "") >= $cut)) ] | group_by(.ad_id) | map(max_by(.ts // ""))' "$kpi_ledger" 2>/dev/null || echo '[]')"
     local n_ads; n_ads="$(printf '%s' "$recent_kpi" | jq 'length' 2>/dev/null || echo 0)"
     if [ "${n_ads:-0}" -gt 0 ]; then
       local total_meta_spend

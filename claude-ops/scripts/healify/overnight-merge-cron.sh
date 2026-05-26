@@ -54,7 +54,10 @@ for pr in prs:
         continue
     if pr.get("mergeable") != "MERGEABLE":
         continue
-    rollup = pr["commits"]["nodes"][0]["commit"].get("statusCheckRollup")
+    commit_nodes = ((pr.get("commits") or {}).get("nodes") or [])
+    if not commit_nodes:
+        continue
+    rollup = (commit_nodes[0].get("commit") or {}).get("statusCheckRollup")
     if not rollup or not isinstance(rollup, dict):
         continue
     ci = rollup.get("state")
