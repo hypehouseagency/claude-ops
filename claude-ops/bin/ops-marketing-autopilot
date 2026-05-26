@@ -1442,7 +1442,15 @@ destination_guard() {
         # It references a blocked domain. Is it ALSO routed through a OneLink base?
         if [ -n "$req_base" ] && ! printf '%s' "$req_base" | grep -q 'PLACEHOLDER'; then
           case "$link" in
-            "${req_base}"*) : ;; # starts with the configured OneLink base — still check params
+            "${req_base}"*)
+              # Prefix alone is not enough: blocked bare domains in path/query still bypass OneLink routing.
+              local _after_base="${link#"$req_base"}"
+              case "$_after_base" in
+                *"$blocked"*)
+                  log "destination_guard: BLOCK — blocked domain '${blocked}' appears after OneLink base (path/query): ${link}"
+                  return 1 ;;
+              esac
+              ;;
             *) log "destination_guard: BLOCK — link contains blocked domain '${blocked}' without OneLink base: ${link}"
                return 1 ;;
           esac
@@ -1516,18 +1524,30 @@ gather_appsflyer() {
   local since7; since7="$(date -v-7d +%Y-%m-%d 2>/dev/null || date -d '7 days ago' +%Y-%m-%d 2>/dev/null || echo "$today")"
 
   # Pull installs (event_name=af_app_opened used as install proxy; real installs via organic report)
-  local installs_resp installs_count
-  installs_resp="$(curl -gsS --max-time 15 \
+  local installs_resp installs_count installs_ok=0
+  if installs_resp="$(curl -gsS --max-time 15 \
     "https://hq1.appsflyer.com/api/raw-data/export/app/${app_id}/installs_report/v5?api_token=${api_key}&from=${since7}&to=${today}&timezone=UTC&format=json" \
-    2>/dev/null || echo '[]')"
-  installs_count="$(printf '%s' "$installs_resp" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)"
+    2>/dev/null)" \
+    && printf '%s' "$installs_resp" | jq -e 'type=="array"' >/dev/null 2>&1; then
+    installs_ok=1
+  fi
+  installs_count="$(printf '%s' "${installs_resp:-}" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)"
 
   # Pull in-app events for registration proxy
-  local reg_resp reg_count
-  reg_resp="$(curl -gsS --max-time 15 \
+  local reg_resp reg_count reg_ok=0
+  if reg_resp="$(curl -gsS --max-time 15 \
     "https://hq1.appsflyer.com/api/raw-data/export/app/${app_id}/in_app_events_report/v5?api_token=${api_key}&from=${since7}&to=${today}&timezone=UTC&event_name=af_complete_registration&format=json" \
-    2>/dev/null || echo '[]')"
-  reg_count="$(printf '%s' "$reg_resp" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)"
+    2>/dev/null)" \
+    && printf '%s' "$reg_resp" | jq -e 'type=="array"' >/dev/null 2>&1; then
+    reg_ok=1
+  fi
+  reg_count="$(printf '%s' "${reg_resp:-}" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)"
+
+  if [ "$installs_ok" != 1 ] || [ "$reg_ok" != 1 ]; then
+    printf '%s' '{"installs_7d":0,"registrations_7d":0,"_status":"pull_failed"}' > "$out"
+    report "- appsflyer: Pull API failed or non-array JSON — wrote pull_failed (${out##*/})"
+    return 0
+  fi
 
   jq -nc \
     --argjson inst "${installs_count:-0}" \
@@ -1713,6 +1733,10 @@ canary_gate_unpause() {
   af_status="$(jq -r '._status // empty' "$af_f" 2>/dev/null || true)"
   if [ "$af_status" = "not_configured" ]; then
     report "- canary gate: HOLD — AppsFlyer not configured (no real Pull API state)"
+    return 0
+  fi
+  if [ "$af_status" = "pull_failed" ]; then
+    report "- canary gate: HOLD — AppsFlyer Pull API failed or invalid (see ${af_f##*/})"
     return 0
   fi
   report "- canary gate: AppsFlyer installs_7d=${af_installs} OK"
