@@ -211,6 +211,7 @@ If `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` is set, use **Agent Teams** when pro
 ```
 TeamCreate("inbox-channels")
 Agent(team_name="inbox-channels", name="whatsapp-scanner", ...)
+Agent(team_name="inbox-channels", name="imessage-scanner", ...)
 Agent(team_name="inbox-channels", name="email-scanner", ...)
 Agent(team_name="inbox-channels", name="slack-scanner", ...)
 Agent(team_name="inbox-channels", name="telegram-scanner", ...)
@@ -361,6 +362,7 @@ AskUserQuestion call 1:
 
 AskUserQuestion call 2 (only if "More..."):
 ```
+  [iMessage only]
   [Slack only]
   [Telegram only]
   [Skip — already done]
