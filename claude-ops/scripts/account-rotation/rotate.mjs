@@ -1237,13 +1237,21 @@ async function makePlaywrightDriver() {
     weSpawnedChrome = true;
     spawnedProfile = browser.profile;
 
-    // 4. Poll CDP until it comes up
-    for (let i = 0; i < 30; i++) {
-      await sleep(500);
-      attached = await tryConnectCDP(chromium);
-      if (attached) break;
+    try {
+      // 4. Poll CDP until it comes up
+      for (let i = 0; i < 30; i++) {
+        await sleep(500);
+        attached = await tryConnectCDP(chromium);
+        if (attached) break;
+      }
+      if (!attached) throw new Error(`CDP didn't come up on :${CDP_PORT} within 15s`);
+    } finally {
+      if (!attached && weSpawnedChrome && spawnedProfile) {
+        try {
+          execSync(`pkill -f "${spawnedProfile}"`, { timeout: 5000 });
+        } catch {}
+      }
     }
-    if (!attached) throw new Error(`CDP didn't come up on :${CDP_PORT} within 15s`);
   }
 
   const { browser: pwBrowser, ctx, page } = attached;
