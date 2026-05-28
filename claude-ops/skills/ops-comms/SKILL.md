@@ -326,7 +326,7 @@ ledger write \
 # After user approves + send fires
 ledger write \
   --claim-key "$CLAIM_KEY" \
-  --kind "send" \
+  --kind "draft" \
   --status "done" \
   --title "Comms: <channel> — <brief description>" \
   --context "sent via <channel>"
