@@ -352,7 +352,7 @@ typed claim via the relevant skill's ledger pattern (see `ops-merge`, `ops-fires
 ```bash
 SESSION_TS=$(date +%Y-%m-%dT%H-%M)
 CLAIM_KEY="yolo:session"
-ledger query --claim-key "$CLAIM_KEY" --since=-PT4H
+ledger query --claim-key "$CLAIM_KEY" --since=-PT24H
 ```
 
 If another YOLO session is `in_progress`, surface it before starting a new one —
