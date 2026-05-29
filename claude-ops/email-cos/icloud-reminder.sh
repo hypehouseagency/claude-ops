@@ -43,8 +43,10 @@ PRODID:-//ClaudeCode//email-chief-of-staff//EN
 BEGIN:VTODO
 UID:${TUID}
 SUMMARY:$(esc "$SUMMARY")
-DESCRIPTION:$(esc "$NOTES")
-${DUE_LINE}
+DESCRIPTION:$(esc "$NOTES")"
+[ -n "$DUE_LINE" ] && ICS="${ICS}
+${DUE_LINE}"
+ICS="${ICS}
 PRIORITY:5
 STATUS:NEEDS-ACTION
 END:VTODO

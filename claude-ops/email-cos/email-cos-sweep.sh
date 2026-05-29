@@ -60,22 +60,25 @@ if [ ! -f "$PROMPT_TEMPLATE" ]; then
   PROMPT_TEMPLATE="$_SCRIPT_DIR/prompts/sweep.prompt"
 fi
 
+export EMAIL_COS_CATEGORY_LIST="$CAT_LIST"
 RENDERED_PROMPT=$(python3 -c "
 import pathlib, os
 tmpl=pathlib.Path('$PROMPT_TEMPLATE').read_text()
 tmpl=tmpl.replace('{{EMAIL_COS_ACCOUNT}}', os.environ.get('EMAIL_COS_ACCOUNT',''))
 tmpl=tmpl.replace('{{EMAIL_COS_STATE_DIR}}', os.environ.get('EMAIL_COS_STATE_DIR',''))
-tmpl=tmpl.replace('{{CATEGORY_LIST}}', '''$CAT_LIST''')
+tmpl=tmpl.replace('{{CATEGORY_LIST}}', os.environ.get('EMAIL_COS_CATEGORY_LIST',''))
 print(tmpl)
 ")
 
 : > "$SD/sweep.out"
 # Run headless with NO MCP servers — otherwise the full env's MCP tool defs blow
 # the model context ("Prompt is too long"). Sweep only needs Bash (gog).
+set +e
 printf '%s' "$RENDERED_PROMPT" | \
   claude --print --model "$EMAIL_COS_SWEEP_MODEL" --dangerously-skip-permissions \
     --strict-mcp-config --mcp-config '{"mcpServers":{}}' --allowedTools Bash >> "$SD/sweep.out" 2>&1
 rc=$?
+set -e
 secs=$(( $(date +%s) - start ))
 echo "{\"ts\":\"$ts\",\"tier\":\"sweep\",\"exit\":$rc,\"secs\":$secs,\"new\":$new}" >> "$SD/metrics.jsonl"
 
