@@ -108,7 +108,7 @@ if [ "$DO_WA" = 1 ]; then
   trap 'rm -f "$OIS_SENDLOG_FILE" "${GMAIL_JSON_FILE:-}"' EXIT
   if command -v journalctl >/dev/null 2>&1; then
     journalctl --user -u whatsapp-bridge.service -o short-unix --no-pager \
-      --since "${DAYS} days ago" 2>/dev/null \
+      2>/dev/null \
       | grep -E "Received request to send message|Message sent to " \
       > "$OIS_SENDLOG_FILE" 2>/dev/null || true
   fi
@@ -370,7 +370,7 @@ def scan_whatsapp():
             if SEND_LOG and inbound_ep is not None:
                 for mj in members:
                     se = SEND_LOG.get(mj)
-                    if se is not None and se > inbound_ep + 30:  # 30s tolerance
+                    if se is not None and se >= inbound_ep - 30:  # 30s clock-skew tolerance
                         answered_ep = se if (answered_ep is None or se > answered_ep) else answered_ep
             if answered_ep is not None:
                 item["last_from_me"] = True
