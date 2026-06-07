@@ -1919,6 +1919,7 @@ FIXQ_STATE_REPLACEMENT = """// claude-ops Fix Q: app-state readiness state. Afte
 var (
 \tappStateReadyMu sync.RWMutex
 \tappStateReady   bool
+\tappStateSyncMu  sync.Mutex
 )
 
 // appStateIsReady reports whether the regular_low app-state has completed its
@@ -1940,15 +1941,25 @@ func setAppStateReady(v bool) {
 // syncAppStateThenReady runs a full FetchAppState(regular_low) and flips the
 // readiness flag once it returns successfully. Safe to call on every Connected;
 // onlyIfNotSynced=false forces a fetch but whatsmeow no-ops cheaply when already
-// in sync. Best-effort: on error we leave appStateReady false so the next connect
-// retries (and /api/resync_app_state?discard_local=true remains the manual heal).
+// in sync. Only clears readiness on the first sync (not yet ready); a failed
+// reconnect refresh keeps the prior ready flag so archive is not gated on 425.
 func syncAppStateThenReady(client *whatsmeow.Client) {
 \tif client == nil {
 \t\treturn
 \t}
-\tsetAppStateReady(false)
-\tif err := client.FetchAppState(context.Background(), appstate.WAPatchRegularLow, true, false); err != nil {
-\t\tfmt.Printf("Fix Q: regular_low app-state sync failed (archive gated until it succeeds): %v\\n", err)
+\twasReady := appStateIsReady()
+\tif !wasReady {
+\t\tsetAppStateReady(false)
+\t}
+\tappStateSyncMu.Lock()
+\terr := client.FetchAppState(context.Background(), appstate.WAPatchRegularLow, true, false)
+\tappStateSyncMu.Unlock()
+\tif err != nil {
+\t\tif wasReady {
+\t\t\tfmt.Printf("Fix Q: regular_low refresh on reconnect failed (keeping prior readiness): %v\\n", err)
+\t\t} else {
+\t\t\tfmt.Printf("Fix Q: regular_low app-state sync failed (archive gated until it succeeds): %v\\n", err)
+\t\t}
 \t\treturn
 \t}
 \tsetAppStateReady(true)
@@ -2056,7 +2067,10 @@ FIXR_DISCARD_REPLACEMENT = """\t\tvar req struct {
 \t\t// diverged local LTHash baseline for this collection before re-fetching, so an
 \t\t// already-corrupted regular_low heals without a manual phone tap. Wipes only the
 \t\t// version + mutation-MAC rows (same SAFE set as Fix G's healLTHash); identity,
-\t\t// session, and pre_key tables are never touched.
+\t\t// session, and pre_key tables are never touched. Serialize with background
+\t\t// connect sync so DELETE + FetchAppState cannot interleave.
+\t\tappStateSyncMu.Lock()
+\t\tdefer appStateSyncMu.Unlock()
 \t\tif r.URL.Query().Get(\"discard_local\") == \"true\" {
 \t\t\treq.DiscardLocal = true
 \t\t}
