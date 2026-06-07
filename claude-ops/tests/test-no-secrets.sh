@@ -36,6 +36,43 @@ build_exclude_args() {
 
 EXCLUDE_ARGS=$(build_exclude_args)
 
+PLACEHOLDER_PATTERN='(example|placeholder|your[-_]|<[A-Z_]+>|\[YOUR_|TODO|REPLACE|fake|dummy|test-token|sk_test_EXAMPLE)'
+
+# Drop lines only when every extracted match is a placeholder or allowlisted.
+filter_scan_hits() {
+  local results="$1"
+  local pattern="$2"
+  local allow_pattern="${3:-}"
+  local filtered=""
+
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local content="${line#*:}"
+    local matches
+    matches=$(echo "$content" | grep -oE "$pattern" 2>/dev/null || true)
+    [[ -z "$matches" ]] && continue
+
+    local bad=0
+    while IFS= read -r match; do
+      [[ -z "$match" ]] && continue
+      if echo "$match" | grep -qE "$PLACEHOLDER_PATTERN"; then
+        continue
+      fi
+      if [[ -n "$allow_pattern" ]] && echo "$match" | grep -qE "$allow_pattern"; then
+        continue
+      fi
+      bad=1
+      break
+    done <<< "$matches"
+
+    if (( bad )); then
+      filtered+="$line"$'\n'
+    fi
+  done <<< "$results"
+
+  echo -n "$filtered"
+}
+
 # Helper: scan for a pattern, return matches (excluding placeholder/example patterns)
 scan_pattern() {
   local label="$1"
@@ -51,12 +88,8 @@ scan_pattern() {
     --include="*.env" --include="*.txt" \
     "$PLUGIN_ROOT" 2>/dev/null || true)
 
-  # Filter out example/placeholder lines
-  results=$(echo "$results" | grep -vE "(example|placeholder|your[-_]|<[A-Z_]+>|\[YOUR_|TODO|REPLACE|fake|dummy|test-token|sk_test_EXAMPLE)" || true)
-
-  # Apply additional allowlist if provided
-  if [[ -n "$allow_pattern" && -n "$results" ]]; then
-    results=$(echo "$results" | grep -vE "$allow_pattern" || true)
+  if [[ -n "$results" ]]; then
+    results=$(filter_scan_hits "$results" "$pattern" "$allow_pattern")
   fi
 
   # Remove empty lines
@@ -120,13 +153,13 @@ scan_pattern "macOS home paths (/Users/<name>)" '/Users/[a-z][a-zA-Z0-9_.-]+' \
   '/Users/(user|username|users|you|your[-_]?user|runner|shared|example|admin)([/"'\''[:space:]]|$)|/Users/[<$\{]'
 
 # Linux home-directory paths with a real-looking username
-scan_pattern "Linux home paths (/home/<name>)" '/home/[a-z][a-zA-Z0-9_.-]+/' \
-  '/home/(user|username|users|you|your[-_]?user|runner|ubuntu|ec2-user|ops|node|app|shared|example)/|/home/[<$\{]'
+scan_pattern "Linux home paths (/home/<name>)" '/home/[a-z][a-zA-Z0-9_.-]+' \
+  '/home/(user|username|users|you|your[-_]?user|runner|ubuntu|ec2-user|ops|node|app|shared|example)([/"'\''[:space:]]|$)|/home/[<$\{]'
 
 # Personal / webmail email addresses
 scan_pattern "personal webmail addresses" \
   '[a-zA-Z0-9._%+-]+@(gmail|yahoo|hotmail|outlook|icloud|proton|protonmail|hey)\.(com|net|org|me)' \
-  '@(example|test|localhost|noreply|anthropic)\.|\b(your|your\.address|youremail|someone|somebody|you|me|name|firstname|lastname|user|username|first\.last)@'
+  '@(example|test|localhost|noreply|anthropic)\.|\b(your|your\.address|youremail|someone|somebody|you|me|name|firstname|lastname|user|username|first\.last|personal)@'
 
 # Owner brand-domain personal emails (the specific domains that leaked)
 scan_pattern "owner brand-domain emails" \
@@ -139,7 +172,7 @@ scan_pattern "AWS account IDs (ARN context)" \
 
 # International phone numbers (allow reserved example ranges: 555-xxxx, 1234567, all-zero)
 scan_pattern "phone numbers (+<cc><digits>)" '\+[1-9][0-9]{1,3}[ -]?[0-9]{6,14}' \
-  '(555[0-9]{4}|1234567|\+1234567890|\+0000000000|\+15551234567|\+1[ -]?555)'
+  '(555[0-9]{4}|1234567|\+1234567890|\+0000000000|\+15551234567|\+1[ -]?555|0{7,})'
 
 # --- Tests-only narrow sweep ---
 # We allow regex literals + assembled patterns in tests/ but flag anything that
@@ -147,6 +180,7 @@ scan_pattern "phone numbers (+<cc><digits>)" '\+[1-9][0-9]{1,3}[ -]?[0-9]{6,14}'
 scan_tests_literal() {
   local label="$1"
   local pattern="$2"
+  local allow_pattern="${3:-}"
   local results
   results=$(grep -rE "$pattern" \
     --include="*.sh" --include="*.ts" --include="*.js" --include="*.mjs" \
@@ -154,7 +188,9 @@ scan_tests_literal() {
   # Strip lines where the pattern is wrapped in single/double quotes followed by
   # regex meta (`{`, `[`, `+`, `*`) — those are pattern definitions, not secrets.
   results=$(echo "$results" | grep -vE "['\"][a-z_]+_(\[|\\\\|\{|\+|\*)" || true)
-  results=$(echo "$results" | grep -vE "(example|placeholder|your[-_]|<[A-Z_]+>|\[YOUR_|TODO|REPLACE|fake|dummy|test-token|sk_test_EXAMPLE)" || true)
+  if [[ -n "$results" ]]; then
+    results=$(filter_scan_hits "$results" "$pattern" "$allow_pattern")
+  fi
   results=$(echo "$results" | grep -v "^$" || true)
   if [[ -n "$results" ]]; then
     local count
@@ -169,6 +205,21 @@ scan_tests_literal() {
 scan_tests_literal "Stripe sk_live_" 'sk_live_[a-zA-Z0-9]{24,}'
 scan_tests_literal "GitHub ghp_" 'ghp_[a-zA-Z0-9]{36,}'
 scan_tests_literal "Slack xoxb-" 'xoxb-[0-9]{10,}-[0-9]{10,}-[a-zA-Z0-9]{20,}'
+
+scan_tests_literal "macOS home paths" '/Users/[a-z][a-zA-Z0-9_.-]+' \
+  '/Users/(user|username|users|you|your[-_]?user|runner|shared|example|admin)([/"'\''[:space:]]|$)|/Users/[<$\{]'
+scan_tests_literal "Linux home paths" '/home/[a-z][a-zA-Z0-9_.-]+' \
+  '/home/(user|username|users|you|your[-_]?user|runner|ubuntu|ec2-user|ops|node|app|shared|example)([/"'\''[:space:]]|$)|/home/[<$\{]'
+scan_tests_literal "personal webmail" \
+  '[a-zA-Z0-9._%+-]+@(gmail|yahoo|hotmail|outlook|icloud|proton|protonmail|hey)\.(com|net|org|me)' \
+  '@(example|test|localhost|noreply|anthropic)\.|\b(your|your\.address|youremail|someone|somebody|you|me|name|firstname|lastname|user|username|first\.last|personal)@'
+scan_tests_literal "owner brand-domain emails" \
+  '[a-zA-Z0-9._%+-]+@(samfeldt|heartfeldt|heartfeldtrecords|aurora-capital)\.[a-z.]+'
+scan_tests_literal "AWS account IDs (ARN context)" \
+  'arn:aws[a-z-]*:[a-z0-9-]*:[a-z0-9-]*:[0-9]{12}:' \
+  '(:000000000000:|:123456789012:)'
+scan_tests_literal "phone numbers" '\+[1-9][0-9]{1,3}[ -]?[0-9]{6,14}' \
+  '(555[0-9]{4}|1234567|\+1234567890|\+0000000000|\+15551234567|\+1[ -]?555|0{7,})'
 
 echo ""
 echo "---"
